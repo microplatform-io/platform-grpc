@@ -73,9 +73,9 @@ func RegisterRouterServer(s *grpc.Server, srv RouterServer) {
 	s.RegisterService(&_Router_serviceDesc, srv)
 }
 
-func _Router_Route_Handler(srv interface{}, ctx context.Context, buf []byte) (interface{}, error) {
+func _Router_Route_Handler(srv interface{}, ctx context.Context, codec grpc.Codec, buf []byte) (interface{}, error) {
 	in := new(Request)
-	if err := proto.Unmarshal(buf, in); err != nil {
+	if err := codec.Unmarshal(buf, in); err != nil {
 		return nil, err
 	}
 	out, err := srv.(RouterServer).Route(ctx, in)

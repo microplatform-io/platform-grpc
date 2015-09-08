@@ -3,11 +3,9 @@ syntax = "proto3";
 package platform_grpc;
 
 service Router {
-  rpc Route (Request) returns (Request) {}
+  rpc Route (stream Request) returns (stream Request) {}
 }
 
 message Request {
-    optional int32 method       = 1;
-    optional int32 resource     = 2;
-    optional bytes body         = 3;
+    bytes payload   = 1;
 }

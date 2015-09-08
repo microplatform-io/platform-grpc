@@ -14,6 +14,8 @@ It has these top-level messages:
 package platform_grpc
 
 import proto "github.com/golang/protobuf/proto"
+import fmt "fmt"
+import math "math"
 
 import (
 	context "golang.org/x/net/context"
@@ -21,29 +23,26 @@ import (
 )
 
 // Reference imports to suppress errors if they are not otherwise used.
-var _ context.Context
-var _ grpc.ClientConn
-
-// Reference imports to suppress errors if they are not otherwise used.
 var _ = proto.Marshal
+var _ = fmt.Errorf
+var _ = math.Inf
 
 type Request struct {
-	Method   int32  `protobuf:"varint,1,opt,name=method" json:"method,omitempty"`
-	Resource int32  `protobuf:"varint,2,opt,name=resource" json:"resource,omitempty"`
-	Body     []byte `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`
+	Payload []byte `protobuf:"bytes,1,opt,name=payload,proto3" json:"payload,omitempty"`
 }
 
 func (m *Request) Reset()         { *m = Request{} }
 func (m *Request) String() string { return proto.CompactTextString(m) }
 func (*Request) ProtoMessage()    {}
 
-func init() {
-}
+// Reference imports to suppress errors if they are not otherwise used.
+var _ context.Context
+var _ grpc.ClientConn
 
 // Client API for Router service
 
 type RouterClient interface {
-	Route(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Request, error)
+	Route(ctx context.Context, opts ...grpc.CallOption) (Router_RouteClient, error)
 }
 
 type routerClient struct {
@@ -54,45 +53,83 @@ func NewRouterClient(cc *grpc.ClientConn) RouterClient {
 	return &routerClient{cc}
 }
 
-func (c *routerClient) Route(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Request, error) {
-	out := new(Request)
-	err := grpc.Invoke(ctx, "/platform_grpc.Router/Route", in, out, c.cc, opts...)
+func (c *routerClient) Route(ctx context.Context, opts ...grpc.CallOption) (Router_RouteClient, error) {
+	stream, err := grpc.NewClientStream(ctx, &_Router_serviceDesc.Streams[0], c.cc, "/platform_grpc.Router/Route", opts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &routerRouteClient{stream}
+	return x, nil
+}
+
+type Router_RouteClient interface {
+	Send(*Request) error
+	Recv() (*Request, error)
+	grpc.ClientStream
+}
+
+type routerRouteClient struct {
+	grpc.ClientStream
+}
+
+func (x *routerRouteClient) Send(m *Request) error {
+	return x.ClientStream.SendMsg(m)
+}
+
+func (x *routerRouteClient) Recv() (*Request, error) {
+	m := new(Request)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // Server API for Router service
 
 type RouterServer interface {
-	Route(context.Context, *Request) (*Request, error)
+	Route(Router_RouteServer) error
 }
 
 func RegisterRouterServer(s *grpc.Server, srv RouterServer) {
 	s.RegisterService(&_Router_serviceDesc, srv)
 }
 
-func _Router_Route_Handler(srv interface{}, ctx context.Context, codec grpc.Codec, buf []byte) (interface{}, error) {
-	in := new(Request)
-	if err := codec.Unmarshal(buf, in); err != nil {
+func _Router_Route_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(RouterServer).Route(&routerRouteServer{stream})
+}
+
+type Router_RouteServer interface {
+	Send(*Request) error
+	Recv() (*Request, error)
+	grpc.ServerStream
+}
+
+type routerRouteServer struct {
+	grpc.ServerStream
+}
+
+func (x *routerRouteServer) Send(m *Request) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func (x *routerRouteServer) Recv() (*Request, error) {
+	m := new(Request)
+	if err := x.ServerStream.RecvMsg(m); err != nil {
 		return nil, err
 	}
-	out, err := srv.(RouterServer).Route(ctx, in)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+	return m, nil
 }
 
 var _Router_serviceDesc = grpc.ServiceDesc{
 	ServiceName: "platform_grpc.Router",
 	HandlerType: (*RouterServer)(nil),
-	Methods: []grpc.MethodDesc{
+	Methods:     []grpc.MethodDesc{},
+	Streams: []grpc.StreamDesc{
 		{
-			MethodName: "Route",
-			Handler:    _Router_Route_Handler,
+			StreamName:    "Route",
+			Handler:       _Router_Route_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
-	Streams: []grpc.StreamDesc{},
 }

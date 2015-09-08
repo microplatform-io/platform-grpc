@@ -20,12 +20,9 @@ type MicroClientConfig struct {
 	// TLS details
 	CertFile string
 	Domain   string
-
-	SupportHeartbeats bool
 }
 
 type MicroClient struct {
-	config           MicroClientConfig
 	clientConn       *grpc.ClientConn
 	client           RouterClient
 	stream           Router_RouteClient
@@ -93,11 +90,6 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 		ready <- true
 
 		for {
-			heartbeatTimeout := make(<-chan time.Time)
-			if mc.config.SupportHeartbeats {
-				heartbeatTimeout = time.After(1000 * time.Millisecond)
-			}
-
 			select {
 			case response := <-internalResponses:
 				logger.Printf("[MicroClient.Route] %s - got response: %s", request.GetUuid(), response.Routing.RouteTo[0].GetUri())
@@ -113,7 +105,7 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 					return
 				}
 
-			case <-heartbeatTimeout:
+			case <-time.After(60000 * time.Millisecond):
 				logger.Printf("[MicroClient.Route] %s - stream has timed out", request.GetUuid())
 
 				select {
@@ -161,7 +153,6 @@ func NewMicroClient(config MicroClientConfig) (*MicroClient, error) {
 	}
 
 	microClient := &MicroClient{
-		config:           config,
 		clientConn:       clientConn,
 		client:           NewRouterClient(clientConn),
 		pendingResponses: make(map[string]chan *platform.Request),

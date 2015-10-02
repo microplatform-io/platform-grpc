@@ -1,15 +1,16 @@
 package platform_grpc
 
 import (
+	"log"
+	"os"
+	"sync"
+	"time"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/microplatform-io/platform"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"log"
-	"os"
-	"sync"
-	"time"
 )
 
 var logger = log.New(os.Stdout, "[platform-grpc] ", log.Ldate|log.Ltime)
@@ -66,7 +67,7 @@ func (mc *MicroClient) rebuildStream() error {
 				select {
 				case pendingResponseChan <- platformResponse:
 					logger.Printf("[MicroClient.Route] %s - successfully routed response to caller", platformResponse.GetUuid())
-				default:
+				case <-time.After(time.Millisecond * 50):
 					logger.Printf("[MicroClient.Route] %s - failed to send to callback due to a blocked channel", platformResponse.GetUuid())
 				}
 			} else {
@@ -81,8 +82,8 @@ func (mc *MicroClient) rebuildStream() error {
 func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request, chan interface{}) {
 	request.Uuid = platform.String(platform.CreateUUID())
 
-	internalResponses := make(chan *platform.Request)
-	clientResponses := make(chan *platform.Request)
+	internalResponses := make(chan *platform.Request, 5)
+	clientResponses := make(chan *platform.Request, 5)
 	streamTimeout := make(chan interface{})
 	ready := make(chan interface{})
 
@@ -98,7 +99,10 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 					continue
 				}
 
-				clientResponses <- response
+				select {
+				case clientResponses <- response:
+				default:
+				}
 
 				if response.GetCompleted() {
 					logger.Printf("[MicroClient.Route] %s - final response, ending goroutine", request.GetUuid())

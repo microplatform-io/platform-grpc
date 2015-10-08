@@ -1,6 +1,8 @@
 package platform_grpc
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -16,7 +18,7 @@ import (
 var logger = log.New(os.Stdout, "[platform-grpc] ", log.Ldate|log.Ltime)
 
 type MicroClientConfig struct {
-	Endpoint string
+	EndpointGetter func() string
 
 	// TLS details
 	CertFile string
@@ -24,6 +26,7 @@ type MicroClientConfig struct {
 }
 
 type MicroClient struct {
+	config           MicroClientConfig
 	clientConn       *grpc.ClientConn
 	client           RouterClient
 	stream           Router_RouteClient
@@ -37,7 +40,26 @@ func (mc *MicroClient) Close() error {
 	return mc.clientConn.Close()
 }
 
-func (mc *MicroClient) rebuildStream() error {
+func (mc *MicroClient) rebuildStream() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errors.New(fmt.Sprintf("failed to rebuild stream: %s", r))
+		}
+	}()
+
+	creds, err := credentials.NewClientTLSFromFile(mc.config.CertFile, mc.config.Domain)
+	if err != nil {
+		return err
+	}
+
+	clientConn, err := grpc.Dial(mc.config.EndpointGetter(), grpc.WithTransportCredentials(creds))
+	if err != nil {
+		return err
+	}
+
+	mc.clientConn = clientConn
+	mc.client = NewRouterClient(clientConn)
+
 	stream, err := mc.client.Route(context.Background())
 	if err != nil {
 		return err
@@ -138,27 +160,29 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 	logger.Printf("[MicroClient.Route] %s - sending platform request", request.GetUuid())
 
-	mc.stream.Send(&Request{
+	err := mc.stream.Send(&Request{
 		Payload: payload,
 	})
+
+	if err != nil {
+		logger.Printf("[MicroClient.Route] Error on sending grpc request. notified client of error , %s", err.Error())
+
+		logger.Println("[MicroClient.Route] Attempting to establish a new connection.")
+
+		if err := mc.rebuildStream(); err != nil {
+			panic("[MicroClient.Route] A new connection, could not be established, Panicking!")
+		}
+
+		// Try again, hopefully not recursing infinitely
+		return mc.Route(request)
+	}
 
 	return clientResponses, streamTimeout
 }
 
 func NewMicroClient(config MicroClientConfig) (*MicroClient, error) {
-	creds, err := credentials.NewClientTLSFromFile(config.CertFile, config.Domain)
-	if err != nil {
-		return nil, err
-	}
-
-	clientConn, err := grpc.Dial(config.Endpoint, grpc.WithTransportCredentials(creds))
-	if err != nil {
-		return nil, err
-	}
-
 	microClient := &MicroClient{
-		clientConn:       clientConn,
-		client:           NewRouterClient(clientConn),
+		config:           config,
 		pendingResponses: make(map[string]chan *platform.Request),
 		mu:               &sync.Mutex{},
 	}

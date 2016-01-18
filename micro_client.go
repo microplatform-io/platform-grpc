@@ -40,6 +40,12 @@ func (mc *MicroClient) Close() error {
 	return mc.clientConn.Close()
 }
 
+func (mc *MicroClient) Reconnect() error {
+	mc.stream.CloseSend()
+	mc.clientConn.Close()
+	return mc.rebuildStream()
+}
+
 func (mc *MicroClient) rebuildStream() (err error) {
 	defer func() {
 		if r := recover(); r != nil {

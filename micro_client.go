@@ -144,15 +144,15 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 	logger.Printf("[MicroClient.Route] %s - sending platform request", request.GetUuid())
 
+	var sendError error
+
 	for i := 0; i < 3; i++ {
-		err := mc.stream.Send(&Request{
+		sendError = mc.stream.Send(&Request{
 			Payload: payload,
 		})
 
-		if err != nil {
-			logger.Printf("[MicroClient.Route] Error on sending grpc request. notified client of error , %s", err.Error())
-
-			logger.Println("[MicroClient.Route] Attempting to establish a new connection.")
+		if sendError != nil {
+			logger.Printf("[MicroClient.Route] Error on sending grpc request, retrying: %s", sendError)
 
 			if err := mc.rebuildStream(); err != nil {
 				panic("[MicroClient.Route] A new connection could not be established, Panicking!")
@@ -160,6 +160,10 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 		} else {
 			break
 		}
+	}
+
+	if sendError != nil {
+		panic("[MicroClient.Route] Failed to send the grpc request multiple times")
 	}
 
 	ready := make(chan interface{})

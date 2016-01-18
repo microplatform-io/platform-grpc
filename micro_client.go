@@ -26,12 +26,14 @@ type MicroClientConfig struct {
 }
 
 type MicroClient struct {
-	config           MicroClientConfig
-	clientConn       *grpc.ClientConn
-	client           RouterClient
-	stream           Router_RouteClient
-	pendingResponses map[string]chan *platform.Request
-	mu               *sync.Mutex
+	config                 MicroClientConfig
+	clientConn             *grpc.ClientConn
+	client                 RouterClient
+	stream                 Router_RouteClient
+	pendingResponses       map[string]chan *platform.Request
+	transportAuthenticator credentials.TransportAuthenticator
+
+	mu *sync.Mutex
 }
 
 func (mc *MicroClient) Close() error {
@@ -43,7 +45,37 @@ func (mc *MicroClient) Close() error {
 func (mc *MicroClient) Reconnect() error {
 	mc.stream.CloseSend()
 	mc.clientConn.Close()
+
 	return mc.rebuildStream()
+}
+
+func (mc *MicroClient) createPendingResponseChan(request *platform.Request) chan *platform.Request {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	mc.pendingResponses[request.GetUuid()] = make(chan *platform.Request, 5)
+
+	return mc.pendingResponses[request.GetUuid()]
+}
+
+func (mc *MicroClient) getPendingResponseChan(request *platform.Request) (chan *platform.Request, error) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	if pendingResponseChan, exists := mc.pendingResponses[request.GetUuid()]; exists {
+		return pendingResponseChan, nil
+	} else {
+		return nil, errors.New("pending response chan not found")
+	}
+}
+
+func (mc *MicroClient) deletePendingResponseChan(request *platform.Request) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	if _, exists := mc.pendingResponses[request.GetUuid()]; exists {
+		delete(mc.pendingResponses, request.GetUuid())
+	}
 }
 
 func (mc *MicroClient) rebuildStream() (err error) {
@@ -53,12 +85,7 @@ func (mc *MicroClient) rebuildStream() (err error) {
 		}
 	}()
 
-	creds, err := credentials.NewClientTLSFromFile(mc.config.CertFile, mc.config.Domain)
-	if err != nil {
-		return err
-	}
-
-	clientConn, err := grpc.Dial(mc.config.EndpointGetter(), grpc.WithTransportCredentials(creds))
+	clientConn, err := grpc.Dial(mc.config.EndpointGetter(), grpc.WithTransportCredentials(mc.transportAuthenticator))
 	if err != nil {
 		return err
 	}
@@ -81,25 +108,21 @@ func (mc *MicroClient) rebuildStream() (err error) {
 				return
 			}
 
-			platformResponse := &platform.Request{}
-			if err := platform.Unmarshal(grpcResponse.Payload, platformResponse); err != nil {
+			response := &platform.Request{}
+			if err := platform.Unmarshal(grpcResponse.Payload, response); err != nil {
 				logger.Printf("[MicroClient.Route] failed to unmarshal platform response: %s", err)
 				continue
 			}
 
-			mc.mu.Lock()
-			pendingResponseChan, exists := mc.pendingResponses[platformResponse.GetUuid()]
-			mc.mu.Unlock()
-
-			if exists {
+			if pendingResponseChan, err := mc.getPendingResponseChan(response); err == nil {
 				select {
-				case pendingResponseChan <- platformResponse:
-					logger.Printf("[MicroClient.Route] %s - successfully routed response to caller", platformResponse.GetUuid())
+				case pendingResponseChan <- response:
+					logger.Printf("[MicroClient.Route] %s - successfully routed response to caller", response.GetUuid())
 				case <-time.After(time.Millisecond * 50):
-					logger.Printf("[MicroClient.Route] %s - failed to send to callback due to a blocked channel", platformResponse.GetUuid())
+					logger.Printf("[MicroClient.Route] %s - failed to send to callback due to a blocked channel", response.GetUuid())
 				}
 			} else {
-				logger.Printf("[MicroClient.Route] %s - got a response for an unknown request uuid: %s", platformResponse.GetUuid(), platformResponse)
+				logger.Printf("[MicroClient.Route] %s - failed to find pending response chan: %s", response.GetUuid(), err)
 			}
 		}
 	}()
@@ -110,17 +133,49 @@ func (mc *MicroClient) rebuildStream() (err error) {
 func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request, chan interface{}) {
 	request.Uuid = platform.String(platform.CreateUUID())
 
-	internalResponses := make(chan *platform.Request, 5)
 	clientResponses := make(chan *platform.Request, 5)
 	streamTimeout := make(chan interface{})
+
+	logger.Printf("[MicroClient.Route] %s - creating pending responses chan", request.GetUuid())
+
+	internalResponses := mc.createPendingResponseChan(request)
+
+	payload, _ := proto.Marshal(request)
+
+	logger.Printf("[MicroClient.Route] %s - sending platform request", request.GetUuid())
+
+	for i := 0; i < 3; i++ {
+		err := mc.stream.Send(&Request{
+			Payload: payload,
+		})
+
+		if err != nil {
+			logger.Printf("[MicroClient.Route] Error on sending grpc request. notified client of error , %s", err.Error())
+
+			logger.Println("[MicroClient.Route] Attempting to establish a new connection.")
+
+			if err := mc.rebuildStream(); err != nil {
+				panic("[MicroClient.Route] A new connection could not be established, Panicking!")
+			}
+		} else {
+			break
+		}
+	}
+
 	ready := make(chan interface{})
 
 	go func() {
+		timer := time.NewTimer(7 * time.Second)
+		defer timer.Stop()
+		defer mc.deletePendingResponseChan(request)
+
 		ready <- true
 
 		for {
 			select {
 			case response := <-internalResponses:
+				timer.Reset(7 * time.Second)
+
 				logger.Printf("[MicroClient.Route] %s - got response: %s", request.GetUuid(), response.Routing.RouteTo[0].GetUri())
 
 				if response.Routing.RouteTo[0].GetUri() == "resource:///heartbeat" {
@@ -129,7 +184,10 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 				select {
 				case clientResponses <- response:
-				default:
+					logger.Printf("[MicroClient.Route] %s - reply chan was available", request.GetUuid())
+
+				case <-time.After(250 * time.Millisecond):
+					logger.Printf("[MicroClient.Route] %s - reply chan was not available", request.GetUuid())
 				}
 
 				if response.GetCompleted() {
@@ -137,7 +195,7 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 					return
 				}
 
-			case <-time.After(60000 * time.Millisecond):
+			case <-timer.C:
 				logger.Printf("[MicroClient.Route] %s - stream has timed out", request.GetUuid())
 
 				select {
@@ -156,39 +214,19 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 	<-ready
 
-	logger.Printf("[MicroClient.Route] %s - assigning pending responses chan to internal responses", request.GetUuid())
-
-	mc.mu.Lock()
-	mc.pendingResponses[request.GetUuid()] = internalResponses
-	mc.mu.Unlock()
-
-	payload, _ := proto.Marshal(request)
-
-	logger.Printf("[MicroClient.Route] %s - sending platform request", request.GetUuid())
-
-	err := mc.stream.Send(&Request{
-		Payload: payload,
-	})
-
-	if err != nil {
-		logger.Printf("[MicroClient.Route] Error on sending grpc request. notified client of error , %s", err.Error())
-
-		logger.Println("[MicroClient.Route] Attempting to establish a new connection.")
-
-		if err := mc.rebuildStream(); err != nil {
-			panic("[MicroClient.Route] A new connection, could not be established, Panicking!")
-		}
-
-		// Try again, hopefully not recursing infinitely
-		return mc.Route(request)
-	}
-
 	return clientResponses, streamTimeout
 }
 
 func NewMicroClient(config MicroClientConfig) (*MicroClient, error) {
+	transportAuthenticator, err := credentials.NewClientTLSFromFile(config.CertFile, config.Domain)
+	if err != nil {
+		return nil, err
+	}
+
 	microClient := &MicroClient{
-		config:           config,
+		config:                 config,
+		transportAuthenticator: transportAuthenticator,
+
 		pendingResponses: make(map[string]chan *platform.Request),
 		mu:               &sync.Mutex{},
 	}

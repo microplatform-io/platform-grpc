@@ -85,9 +85,24 @@ func (mc *MicroClient) rebuildStream() (err error) {
 		}
 	}()
 
-	clientConn, err := grpc.Dial(mc.config.EndpointGetter(), grpc.WithTransportCredentials(mc.transportAuthenticator))
-	if err != nil {
-		return err
+	var clientConn *grpc.ClientConn
+
+	if mc.transportAuthenticator != nil {
+		logger.Println("> transport authenticator is set, attempting to generate a secure connection to gRPC")
+
+		clientConn, err = grpc.Dial(mc.config.EndpointGetter(), grpc.WithTransportCredentials(mc.transportAuthenticator))
+		if err != nil {
+			logger.Println("> failed to create a secure connection to grpc:", err)
+			return err
+		}
+	} else {
+		logger.Println("> transport authenticator is NOT set, attempting to generate an INSECURE connection to gRPC")
+
+		clientConn, err = grpc.Dial(mc.config.EndpointGetter(), grpc.WithInsecure())
+		if err != nil {
+			logger.Println("> failed to create an insecure connection to grpc, complete failure:", err)
+			return err
+		}
 	}
 
 	mc.clientConn = clientConn
@@ -190,7 +205,7 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 				case clientResponses <- response:
 					logger.Printf("[MicroClient.Route] %s - reply chan was available", request.GetUuid())
 
-				case <-time.After(250 * time.Millisecond):
+				default:
 					logger.Printf("[MicroClient.Route] %s - reply chan was not available", request.GetUuid())
 				}
 
@@ -224,7 +239,8 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 func NewMicroClient(config MicroClientConfig) (*MicroClient, error) {
 	transportAuthenticator, err := credentials.NewClientTLSFromFile(config.CertFile, config.Domain)
 	if err != nil {
-		return nil, err
+		log.Println("> failed to create transport authenticator!", err)
+		log.Println("> WARNING: USING GRPC INSECURELY")
 	}
 
 	microClient := &MicroClient{

@@ -33,7 +33,7 @@ type MicroClient struct {
 	pendingResponses       map[string]chan *platform.Request
 	transportAuthenticator credentials.TransportAuthenticator
 
-	mu *sync.Mutex
+	mu sync.Mutex
 }
 
 func (mc *MicroClient) Close() error {
@@ -84,6 +84,14 @@ func (mc *MicroClient) rebuildStream() (err error) {
 			err = errors.New(fmt.Sprintf("failed to rebuild stream: %s", r))
 		}
 	}()
+
+	if mc.stream != nil {
+		mc.stream.CloseSend()
+	}
+
+	if mc.clientConn != nil {
+		mc.clientConn.Close()
+	}
 
 	var clientConn *grpc.ClientConn
 
@@ -248,7 +256,7 @@ func NewMicroClient(config MicroClientConfig) (*MicroClient, error) {
 		transportAuthenticator: transportAuthenticator,
 
 		pendingResponses: make(map[string]chan *platform.Request),
-		mu:               &sync.Mutex{},
+		mu:               sync.Mutex{},
 	}
 
 	if err := microClient.rebuildStream(); err != nil {

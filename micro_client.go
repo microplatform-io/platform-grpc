@@ -1,9 +1,11 @@
 package platform_grpc
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -17,12 +19,47 @@ import (
 
 var logger = log.New(os.Stdout, "[platform-grpc] ", log.Ldate|log.Ltime)
 
+type httpEndpointDetails struct {
+	protocol string
+	host     string
+	port     string
+}
+
+func HttpEndpointGetter(endpoint string) func() string {
+	return func() string {
+		logger.Printf("Getting the endpoint details from: %s", endpoint)
+
+		resp, err := http.Get(endpoint)
+		if err != nil {
+			logger.Printf("Failed to receive details from: %s - %s", endpoint, err)
+
+			return ""
+		}
+		defer resp.Body.Close()
+
+		endpointDetails := &httpEndpointDetails{}
+		if err := json.NewDecoder(resp.Body).Decode(endpointDetails); err != nil {
+			return ""
+		}
+
+		logger.Printf("Got the endpoint details from: %s - %#v", endpoint, endpointDetails)
+
+		return fmt.Sprintf("%s:%s", endpointDetails.host, endpointDetails.port)
+	}
+}
+
 type MicroClientConfig struct {
 	EndpointGetter func() string
 
 	// TLS details
 	CertFile string
 	Domain   string
+}
+
+type MicroClientInterface interface {
+	Route(*platform.Request) (chan *platform.Request, chan interface{})
+	Reconnect() error
+	Close() error
 }
 
 type MicroClient struct {

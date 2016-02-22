@@ -20,9 +20,9 @@ import (
 var logger = log.New(os.Stdout, "[platform-grpc] ", log.Ldate|log.Ltime)
 
 type httpEndpointDetails struct {
-	protocol string
-	host     string
-	port     string
+	Protocol string
+	Host     string
+	Port     string
 }
 
 func HttpEndpointGetter(endpoint string) func() string {
@@ -44,7 +44,7 @@ func HttpEndpointGetter(endpoint string) func() string {
 
 		logger.Printf("Got the endpoint details from: %s - %#v", endpoint, endpointDetails)
 
-		return fmt.Sprintf("%s:%s", endpointDetails.host, endpointDetails.port)
+		return fmt.Sprintf("%s:%s", endpointDetails.Host, endpointDetails.Port)
 	}
 }
 

@@ -154,8 +154,6 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 	logger.Printf("[MicroClient.Route] %s - created stream", request.GetUuid())
 
 	go func() {
-		defer stream.CloseSend()
-
 		for {
 			logger.Printf("[MicroClient.Route] %s - waiting on response from grpc", request.GetUuid())
 
@@ -206,6 +204,8 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 		return responses, streamTimeout
 	}
+
+	stream.CloseSend()
 
 	logger.Printf("[MicroClient.Route] %s - sent request to grpc", request.GetUuid())
 

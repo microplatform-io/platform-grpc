@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -16,7 +15,7 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-var logger = log.New(os.Stdout, "[platform-grpc] ", log.Ldate|log.Ltime)
+var logger = platform.GetLogger("[platform-grpc] ")
 
 type httpEndpointDetails struct {
 	Protocol string
@@ -173,6 +172,9 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 				logger.Printf("[MicroClient.Route] failed to unmarshal platform response: %s", err)
 				continue
 			}
+
+			logger.Debugln("[MicroClient.Route] received a response")
+			logger.PrettyPrint(response)
 
 			if response.Routing != nil && response.Routing.RouteTo[0].GetUri() == "resource:///heartbeat" {
 				continue

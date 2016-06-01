@@ -174,7 +174,7 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 				continue
 			}
 
-			if response.Routing.RouteTo[0].GetUri() == "resource:///heartbeat" {
+			if response.Routing != nil && response.Routing.RouteTo[0].GetUri() == "resource:///heartbeat" {
 				continue
 			}
 

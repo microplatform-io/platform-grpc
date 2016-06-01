@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-var logger = platform.GetLogger("[platform-grpc] ")
+var logger = platform.GetLogger("platform-grpc")
 
 type httpEndpointDetails struct {
 	Protocol string
@@ -116,11 +116,11 @@ func (mc *MicroClient) getHeartbeatTimeout() time.Duration {
 }
 
 func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request, chan interface{}) {
-	responses := make(chan *platform.Request)
+	responses := make(chan *platform.Request, 5)
 	streamTimeout := make(chan interface{})
 
 	closed := false
-	streamContext, streamCancel := context.WithCancel(context.Background())
+	streamContext := context.Background()
 
 	closeStreamTimeout := func() {
 		if closed {
@@ -130,7 +130,6 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 		closed = true
 
 		close(streamTimeout)
-		streamCancel()
 	}
 
 	if request == nil {
@@ -139,57 +138,63 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 		return responses, streamTimeout
 	}
 
-	timer := time.AfterFunc(mc.getHeartbeatTimeout(), func() {
-		closeStreamTimeout()
-	})
+	if request.Uuid == nil {
+		request.Uuid = platform.String(platform.CreateUUID())
+	}
+
+	logger.Printf("[MicroClient.Route] %s - creating stream", request.GetUuid())
 
 	stream, err := mc.client.Route(streamContext)
 	if err != nil {
-		timer.Stop()
-
 		closeStreamTimeout()
 
 		return responses, streamTimeout
 	}
 
+	logger.Printf("[MicroClient.Route] %s - created stream", request.GetUuid())
+
 	go func() {
-		defer timer.Stop()
 		defer stream.CloseSend()
 
-		timer.Reset(mc.getHeartbeatTimeout())
-
 		for {
+			logger.Printf("[MicroClient.Route] %s - waiting on response from grpc", request.GetUuid())
+
 			grpcResponse, err := stream.Recv()
 			if err != nil {
-				logger.Printf("[MicroClient.Route] failed to recv client response: %s", err)
+				logger.Printf("[MicroClient.Route] %s - failed to recv client response: %s", request.GetUuid(), err)
 				break
 			}
 
-			timer.Reset(mc.getHeartbeatTimeout())
-
 			response := &platform.Request{}
 			if err := platform.Unmarshal(grpcResponse.Payload, response); err != nil {
-				logger.Printf("[MicroClient.Route] failed to unmarshal platform response: %s", err)
+				logger.Printf("[MicroClient.Route] %s - failed to unmarshal platform response: %s", request.GetUuid(), err)
 				continue
 			}
 
-			logger.Debugln("[MicroClient.Route] received a response")
+			logger.Debugf("[MicroClient.Route] %s - received a response", request.GetUuid())
 			logger.PrettyPrint(response)
 
 			if response.Routing != nil && response.Routing.RouteTo[0].GetUri() == "resource:///heartbeat" {
 				continue
 			}
 
-			responses <- response
+			select {
+			case responses <- response:
+				logger.Debugf("[MicroClient.Route] %s - successfully placed response on channel", request.GetUuid())
+			default:
+				logger.Debugf("[MicroClient.Route] %s - failed to place response on channel", request.GetUuid())
+			}
 
 			if response.GetCompleted() {
-				logger.Printf("[MicroClient.Route] got last response, shutting down")
+				logger.Printf("[MicroClient.Route] %s - got last response, shutting down", request.GetUuid())
 				break
 			}
 		}
 	}()
 
 	payload, _ := proto.Marshal(request)
+
+	logger.Printf("[MicroClient.Route] %s - sending request to grpc", request.GetUuid())
 
 	if err := stream.Send(&Request{
 		Payload: payload,
@@ -199,6 +204,8 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 		return responses, streamTimeout
 	}
+
+	logger.Printf("[MicroClient.Route] %s - sent request to grpc", request.GetUuid())
 
 	return responses, streamTimeout
 }

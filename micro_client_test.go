@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,9 +57,20 @@ func (s *testMicroServer) Route(routeServer Router_RouteServer) error {
 		return err
 	}
 
-	if err := routeServer.Send(request); err != nil {
+	platformRequest := &platform.Request{}
+	if err := platform.Unmarshal(request.Payload, platformRequest); err != nil {
 		return err
 	}
+
+	logger.Debugf("[testGrpcServer] %s - got a request, sending a response now", platformRequest.GetUuid())
+
+	if err := routeServer.Send(request); err != nil {
+		logger.Debugf("[testGrpcServer] %s - failed to send response: %s", platformRequest.GetUuid(), err)
+
+		return err
+	}
+
+	logger.Debugf("[testGrpcServer] %s - got a request, sent response", platformRequest.GetUuid())
 
 	return nil
 }
@@ -144,23 +156,23 @@ func TestMicroClientRoute(t *testing.T) {
 		}
 	})
 
-	Convey("Routing a request on a client with an invalid endpoint should produce a stream timeout", t, func() {
-		microClient, err := NewMicroClient(MicroClientConfig{
-			EndpointGetter:   func() string { return "whatever:8000" },
-			HeartbeatTimeout: 100 * time.Millisecond,
-		})
-		defer microClient.Close()
-		So(microClient, ShouldNotBeNil)
-		So(err, ShouldBeNil)
+	// Convey("Routing a request on a client with an invalid endpoint should produce a stream timeout", t, func() {
+	// 	microClient, err := NewMicroClient(MicroClientConfig{
+	// 		EndpointGetter:   func() string { return "whatever:8000" },
+	// 		HeartbeatTimeout: 100 * time.Millisecond,
+	// 	})
+	// 	defer microClient.Close()
+	// 	So(microClient, ShouldNotBeNil)
+	// 	So(err, ShouldBeNil)
 
-		responses, streamTimeout := microClient.Route(&platform.Request{})
-		select {
-		case response := <-responses:
-			t.Errorf("got an unexpected response from routing: %#v", response)
-		case <-streamTimeout:
-			// Good to go!
-		}
-	})
+	// 	responses, streamTimeout := microClient.Route(&platform.Request{})
+	// 	select {
+	// 	case response := <-responses:
+	// 		t.Errorf("got an unexpected response from routing: %#v", response)
+	// 	case <-streamTimeout:
+	// 		// Good to go!
+	// 	}
+	// })
 
 	Convey("Routing a request on a client to the test server should echo back the request", t, func() {
 		testGrpcServer := newTestGrpcServer()
@@ -186,5 +198,45 @@ func TestMicroClientRoute(t *testing.T) {
 		case <-streamTimeout:
 			t.Errorf("got an unexpected stream timeout from routing")
 		}
+	})
+
+	Convey("Routing many requests should not produce any locks", t, func(c C) {
+		testGrpcServer := newTestGrpcServer()
+		defer testGrpcServer.grpcServer.Stop()
+
+		microClient, err := NewMicroClient(MicroClientConfig{
+			EndpointGetter:   func() string { return testGrpcServer.URL },
+			HeartbeatTimeout: 100 * time.Millisecond,
+		})
+		defer microClient.Close()
+		So(microClient, ShouldNotBeNil)
+		So(err, ShouldBeNil)
+
+		wg := sync.WaitGroup{}
+
+		for i := 0; i < 10000; i++ {
+			wg.Add(1)
+
+			go func() {
+				request := &platform.Request{
+					Payload:   []byte("HELLO"),
+					Completed: platform.Bool(true),
+				}
+
+				startTime := time.Now()
+
+				responses, streamTimeout := microClient.Route(request)
+				select {
+				case response := <-responses:
+					c.So(response, ShouldResemble, request)
+				case <-streamTimeout:
+					t.Errorf("%s - got an unexpected stream timeout from routing: %s", request.GetUuid(), time.Now().Sub(startTime))
+				}
+
+				wg.Done()
+			}()
+		}
+
+		wg.Wait()
 	})
 }

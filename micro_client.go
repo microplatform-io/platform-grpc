@@ -161,6 +161,8 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 			grpcResponse, err := stream.Recv()
 			if err != nil {
+				closeStreamTimeout()
+
 				logger.Printf("[MicroClient.Route] %s - failed to recv client response: %s", request.GetUuid(), err)
 				break
 			}

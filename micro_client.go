@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -141,7 +142,8 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 		request.Uuid = platform.String(platform.CreateUUID())
 	}
 
-	logger.Printf("[MicroClient.Route] %s - creating stream", request.GetUuid())
+	logger.Debugf("[MicroClient.Route] %s - creating stream for request", request.GetUuid())
+	logger.PrettyPrint(request)
 
 	stream, err := mc.client.Route(context.Background())
 	if err != nil {
@@ -150,23 +152,25 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 		return responses, streamTimeout
 	}
 
-	logger.Printf("[MicroClient.Route] %s - created stream", request.GetUuid())
+	logger.Debugf("[MicroClient.Route] %s - created stream", request.GetUuid())
 
 	go func() {
 		for {
-			logger.Printf("[MicroClient.Route] %s - waiting on response from grpc", request.GetUuid())
+			logger.Debugf("[MicroClient.Route] %s - waiting on response from grpc", request.GetUuid())
 
 			grpcResponse, err := stream.Recv()
 			if err != nil {
-				closeStreamTimeout()
+				if err != io.EOF {
+					logger.Debugf("[MicroClient.Route] %s - failed to recv client response: %s", request.GetUuid(), err)
+					closeStreamTimeout()
+				}
 
-				logger.Printf("[MicroClient.Route] %s - failed to recv client response: %s", request.GetUuid(), err)
 				break
 			}
 
 			response := &platform.Request{}
 			if err := platform.Unmarshal(grpcResponse.Payload, response); err != nil {
-				logger.Printf("[MicroClient.Route] %s - failed to unmarshal platform response: %s", request.GetUuid(), err)
+				logger.Debugf("[MicroClient.Route] %s - failed to unmarshal platform response: %s", request.GetUuid(), err)
 				continue
 			}
 
@@ -188,12 +192,12 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 	payload, _ := proto.Marshal(request)
 
-	logger.Printf("[MicroClient.Route] %s - sending request to grpc", request.GetUuid())
+	logger.Debugf("[MicroClient.Route] %s - sending request to grpc", request.GetUuid())
 
 	if err := stream.Send(&Request{
 		Payload: payload,
 	}); err != nil {
-		logger.Printf("[MicroClient.Route] failed to send client response: %s", err)
+		logger.Debugf("[MicroClient.Route] %s - failed to send client response: %s", request.GetUuid(), err)
 		closeStreamTimeout()
 
 		return responses, streamTimeout
@@ -201,7 +205,7 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 	stream.CloseSend()
 
-	logger.Printf("[MicroClient.Route] %s - sent request to grpc", request.GetUuid())
+	logger.Debugf("[MicroClient.Route] %s - sent request to grpc", request.GetUuid())
 
 	return responses, streamTimeout
 }

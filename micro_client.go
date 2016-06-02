@@ -8,9 +8,10 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/net/context"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/microplatform-io/platform"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -120,7 +121,6 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 	streamTimeout := make(chan interface{})
 
 	closed := false
-	streamContext := context.Background()
 
 	closeStreamTimeout := func() {
 		if closed {
@@ -144,7 +144,7 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 	logger.Printf("[MicroClient.Route] %s - creating stream", request.GetUuid())
 
-	stream, err := mc.client.Route(streamContext)
+	stream, err := mc.client.Route(context.Background())
 	if err != nil {
 		closeStreamTimeout()
 
@@ -183,11 +183,6 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 				logger.Debugf("[MicroClient.Route] %s - successfully placed response on channel", request.GetUuid())
 			default:
 				logger.Debugf("[MicroClient.Route] %s - failed to place response on channel", request.GetUuid())
-			}
-
-			if response.GetCompleted() {
-				logger.Printf("[MicroClient.Route] %s - got last response, shutting down", request.GetUuid())
-				break
 			}
 		}
 	}()

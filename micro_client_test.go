@@ -187,6 +187,7 @@ func TestMicroClientRoute(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		request := &platform.Request{
+			Routing:   platform.RouteToUri("resource:///platform/reply/testing"),
 			Payload:   []byte("HELLO"),
 			Completed: platform.Bool(true),
 		}
@@ -219,6 +220,7 @@ func TestMicroClientRoute(t *testing.T) {
 
 			go func() {
 				request := &platform.Request{
+					Routing:   platform.RouteToUri("resource:///platform/reply/testing"),
 					Payload:   []byte("HELLO"),
 					Completed: platform.Bool(true),
 				}

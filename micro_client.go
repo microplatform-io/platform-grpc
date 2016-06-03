@@ -177,7 +177,17 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 			logger.Debugf("[MicroClient.Route] %s - received a response", request.GetUuid())
 			logger.PrettyPrint(response)
 
-			if response.Routing != nil && response.Routing.RouteTo[0].GetUri() == "resource:///heartbeat" {
+			if response.Routing == nil {
+				logger.Warningf("[MicroClient.Route] %s - routing was empty for request to %s", request.GetUuid(), request.Routing.RouteTo[0].GetUri())
+				continue
+			}
+
+			if len(response.Routing.RouteTo) <= 0 {
+				logger.Warningf("[MicroClient.Route] %s - routing was empty for request to %s", request.GetUuid(), request.Routing.RouteTo[0].GetUri())
+				continue
+			}
+
+			if response.Routing.RouteTo[0].GetUri() == "resource:///heartbeat" {
 				continue
 			}
 

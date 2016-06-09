@@ -76,10 +76,10 @@ type MicroClientInterface interface {
 }
 
 type MicroClient struct {
-	config                 MicroClientConfig
-	clientConn             *grpc.ClientConn
-	client                 RouterClient
-	transportAuthenticator credentials.TransportAuthenticator
+	config               MicroClientConfig
+	clientConn           *grpc.ClientConn
+	client               RouterClient
+	transportCredentials credentials.TransportCredentials
 }
 
 func (mc *MicroClient) Close() error {
@@ -97,11 +97,11 @@ func (mc *MicroClient) Reconnect() error {
 func (mc *MicroClient) connect() (*grpc.ClientConn, error) {
 	var dialOptions grpc.DialOption
 
-	if mc.transportAuthenticator != nil {
-		logger.Println("> transport authenticator is set, attempting to generate a secure connection to gRPC")
-		dialOptions = grpc.WithTransportCredentials(mc.transportAuthenticator)
+	if mc.transportCredentials != nil {
+		logger.Println("> transport credentials are set, attempting to generate a secure connection to gRPC")
+		dialOptions = grpc.WithTransportCredentials(mc.transportCredentials)
 	} else {
-		logger.Println("> transport authenticator is NOT set, attempting to generate an INSECURE connection to gRPC")
+		logger.Println("> transport credentials are NOT set, attempting to generate an INSECURE connection to gRPC")
 		dialOptions = grpc.WithInsecure()
 	}
 
@@ -145,12 +145,21 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 	logger.Debugf("[MicroClient.Route] %s - creating stream for request", request.GetUuid())
 	logger.PrettyPrint(request)
 
-	stream, err := mc.client.Route(context.Background())
+	streamContext, streamCancel := context.WithCancel(context.Background())
+
+	timer := time.AfterFunc(mc.getHeartbeatTimeout(), func() {
+		closeStreamTimeout()
+		streamCancel()
+	})
+
+	stream, err := mc.client.Route(streamContext)
 	if err != nil {
 		closeStreamTimeout()
 
 		return responses, streamTimeout
 	}
+
+	timer.Reset(mc.getHeartbeatTimeout())
 
 	logger.Debugf("[MicroClient.Route] %s - created stream", request.GetUuid())
 
@@ -167,6 +176,8 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 
 				break
 			}
+
+			timer.Reset(mc.getHeartbeatTimeout())
 
 			response := &platform.Request{}
 			if err := platform.Unmarshal(grpcResponse.Payload, response); err != nil {
@@ -213,6 +224,8 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 		return responses, streamTimeout
 	}
 
+	timer.Reset(mc.getHeartbeatTimeout())
+
 	stream.CloseSend()
 
 	logger.Debugf("[MicroClient.Route] %s - sent request to grpc", request.GetUuid())
@@ -225,15 +238,15 @@ func NewMicroClient(config MicroClientConfig) (*MicroClient, error) {
 		return nil, errors.New("Endpoint getter is not properly defined as a function that returns a string")
 	}
 
-	transportAuthenticator, err := credentials.NewClientTLSFromFile(config.CertFile, config.Domain)
+	transportCredentials, err := credentials.NewClientTLSFromFile(config.CertFile, config.Domain)
 	if err != nil {
-		log.Println("> failed to create transport authenticator!", err)
+		log.Println("> failed to create transport credentials!", err)
 		log.Println("> WARNING: USING GRPC INSECURELY")
 	}
 
 	microClient := &MicroClient{
-		config:                 config,
-		transportAuthenticator: transportAuthenticator,
+		config:               config,
+		transportCredentials: transportCredentials,
 	}
 
 	clientConn, err := microClient.connect()

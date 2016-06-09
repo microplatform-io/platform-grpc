@@ -15,40 +15,16 @@ import (
 	"google.golang.org/grpc"
 )
 
-type countingListener struct {
-	listener net.Listener
-
-	conns            []net.Conn
-	totalAcceptCalls int
+type testRouterServer struct {
+	shouldTimeout bool
 }
 
-func (l *countingListener) Accept() (net.Conn, error) {
-	conn, err := l.listener.Accept()
-	if err == nil {
-		l.totalAcceptCalls += 1
-		l.conns = append(l.conns, conn)
+func (s *testRouterServer) Route(stream Router_RouteServer) error {
+	if s.shouldTimeout {
+		return nil
 	}
 
-	return conn, err
-}
-
-func (l *countingListener) Addr() net.Addr {
-	return l.Addr()
-}
-
-func (l *countingListener) Close() error {
-	for i := range l.conns {
-		l.conns[i].Close()
-	}
-
-	return l.listener.Close()
-}
-
-type testMicroServer struct {
-}
-
-func (s *testMicroServer) Route(routeServer Router_RouteServer) error {
-	request, err := routeServer.Recv()
+	request, err := stream.Recv()
 	if err != nil {
 		if err == io.EOF {
 			return nil
@@ -64,7 +40,7 @@ func (s *testMicroServer) Route(routeServer Router_RouteServer) error {
 
 	logger.Debugf("[testGrpcServer] %s - got a request, sending a response now", platformRequest.GetUuid())
 
-	if err := routeServer.Send(request); err != nil {
+	if err := stream.Send(request); err != nil {
 		logger.Debugf("[testGrpcServer] %s - failed to send response: %s", platformRequest.GetUuid(), err)
 
 		return err
@@ -75,19 +51,15 @@ func (s *testMicroServer) Route(routeServer Router_RouteServer) error {
 	return nil
 }
 
-func newTestMicroServer() *testMicroServer {
-	return &testMicroServer{}
-}
-
 type testGrpcServer struct {
 	URL      string
 	Listener net.Listener
 
-	testMicroServer *testMicroServer
-	grpcServer      *grpc.Server
+	routerServer RouterServer
+	grpcServer   *grpc.Server
 }
 
-func newTestGrpcServer() *testGrpcServer {
+func newTestGrpcServer(routerServer RouterServer) *testGrpcServer {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// It's very important to use unique ports to prevent binding to a used port
@@ -99,23 +71,16 @@ func newTestGrpcServer() *testGrpcServer {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	lis = &countingListener{
-		listener:         lis,
-		totalAcceptCalls: 0,
-	}
-
-	testMicroServer := newTestMicroServer()
-
 	s := grpc.NewServer()
-	RegisterRouterServer(s, testMicroServer)
+	RegisterRouterServer(s, routerServer)
 	go s.Serve(lis)
 
 	return &testGrpcServer{
 		URL:      addr,
 		Listener: lis,
 
-		testMicroServer: testMicroServer,
-		grpcServer:      s,
+		routerServer: routerServer,
+		grpcServer:   s,
 	}
 }
 
@@ -156,26 +121,55 @@ func TestMicroClientRoute(t *testing.T) {
 		}
 	})
 
-	// Convey("Routing a request on a client with an invalid endpoint should produce a stream timeout", t, func() {
-	// 	microClient, err := NewMicroClient(MicroClientConfig{
-	// 		EndpointGetter:   func() string { return "whatever:8000" },
-	// 		HeartbeatTimeout: 100 * time.Millisecond,
-	// 	})
-	// 	defer microClient.Close()
-	// 	So(microClient, ShouldNotBeNil)
-	// 	So(err, ShouldBeNil)
+	Convey("Routing a request on a client with an invalid endpoint should produce a stream timeout", t, func() {
+		microClient, err := NewMicroClient(MicroClientConfig{
+			EndpointGetter:   func() string { return "whatever:8000" },
+			HeartbeatTimeout: 100 * time.Millisecond,
+		})
+		defer microClient.Close()
+		So(microClient, ShouldNotBeNil)
+		So(err, ShouldBeNil)
 
-	// 	responses, streamTimeout := microClient.Route(&platform.Request{})
-	// 	select {
-	// 	case response := <-responses:
-	// 		t.Errorf("got an unexpected response from routing: %#v", response)
-	// 	case <-streamTimeout:
-	// 		// Good to go!
-	// 	}
-	// })
+		responses, streamTimeout := microClient.Route(&platform.Request{})
+		select {
+		case response := <-responses:
+			t.Errorf("got an unexpected response from routing: %#v", response)
+		case <-streamTimeout:
+			// Good to go!
+		}
+	})
+
+	Convey("Routing a request on a client to a test server that times out should produce a stream timeout", t, func() {
+		testGrpcServer := newTestGrpcServer(&testRouterServer{
+			shouldTimeout: true,
+		})
+		defer testGrpcServer.grpcServer.Stop()
+
+		microClient, err := NewMicroClient(MicroClientConfig{
+			EndpointGetter:   func() string { return testGrpcServer.URL },
+			HeartbeatTimeout: 100 * time.Millisecond,
+		})
+		defer microClient.Close()
+		So(microClient, ShouldNotBeNil)
+		So(err, ShouldBeNil)
+
+		request := &platform.Request{
+			Routing:   platform.RouteToUri("resource:///platform/reply/testing"),
+			Payload:   []byte("HELLO"),
+			Completed: platform.Bool(true),
+		}
+
+		responses, streamTimeout := microClient.Route(request)
+		select {
+		case response := <-responses:
+			t.Errorf("got an unexpected response from routing: %#v", response)
+		case <-streamTimeout:
+			// Good to go!
+		}
+	})
 
 	Convey("Routing a request on a client to the test server should echo back the request", t, func() {
-		testGrpcServer := newTestGrpcServer()
+		testGrpcServer := newTestGrpcServer(&testRouterServer{})
 		defer testGrpcServer.grpcServer.Stop()
 
 		microClient, err := NewMicroClient(MicroClientConfig{
@@ -202,12 +196,12 @@ func TestMicroClientRoute(t *testing.T) {
 	})
 
 	Convey("Routing many requests should not produce any locks", t, func(c C) {
-		testGrpcServer := newTestGrpcServer()
+		testGrpcServer := newTestGrpcServer(&testRouterServer{})
 		defer testGrpcServer.grpcServer.Stop()
 
 		microClient, err := NewMicroClient(MicroClientConfig{
 			EndpointGetter:   func() string { return testGrpcServer.URL },
-			HeartbeatTimeout: 100 * time.Millisecond,
+			HeartbeatTimeout: 5000 * time.Second,
 		})
 		defer microClient.Close()
 		So(microClient, ShouldNotBeNil)

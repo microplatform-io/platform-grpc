@@ -142,8 +142,7 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 		request.Uuid = platform.String(platform.CreateUUID())
 	}
 
-	logger.Debugf("[MicroClient.Route] %s - creating stream for request", request.GetUuid())
-	logger.PrettyPrint(request)
+	logger.WithField("request", request).Debugf("[MicroClient.Route] %s - creating stream for request", request.GetUuid())
 
 	streamContext, streamCancel := context.WithCancel(context.Background())
 
@@ -185,8 +184,7 @@ func (mc *MicroClient) Route(request *platform.Request) (chan *platform.Request,
 				continue
 			}
 
-			logger.Debugf("[MicroClient.Route] %s - received a response", request.GetUuid())
-			logger.PrettyPrint(response)
+			logger.WithField("response", response).Debugf("[MicroClient.Route] %s - received a response", request.GetUuid())
 
 			if response.Routing == nil {
 				logger.Warningf("[MicroClient.Route] %s - routing was empty for request to %s", request.GetUuid(), request.Routing.RouteTo[0].GetUri())
